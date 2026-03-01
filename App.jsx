@@ -393,18 +393,23 @@ export default function BingoMaster() {
       const data = snap.data();
       setMultiplayerState(data);
       setSelectedMode(data.mode);
-      if (data.status === 'playing' && currentScreen === 'lobby') { winProcessedRef.current = false; setCurrentScreen('playing'); }
-      else if (data.status === 'finished' && currentScreen === 'playing') {
-        setGameState(data.winnerInfo?.uid === user.uid ? 'won' : 'lost');
-        setCurrentScreen('finished');
-        if (data.winnerInfo?.uid !== user.uid && soundEnabled) {
-          window.speechSynthesis?.cancel();
-          window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`¡Bingo! ¡Ganó ${data.winnerInfo?.name}!`));
+      // Use functional update to always read latest currentScreen
+      setCurrentScreen(prev => {
+        if (data.status === 'playing' && prev === 'lobby') { winProcessedRef.current = false; return 'playing'; }
+        if (data.status === 'finished' && prev === 'playing') {
+          setGameState(data.winnerInfo?.uid === user.uid ? 'won' : 'lost');
+          if (data.winnerInfo?.uid !== user.uid && soundEnabled) {
+            window.speechSynthesis?.cancel();
+            window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`¡Bingo! ¡Ganó ${data.winnerInfo?.name}!`));
+          }
+          return 'finished';
         }
-      } else if (data.status === 'lobby' && currentScreen === 'finished') { setCurrentScreen('lobby'); }
+        if (data.status === 'lobby' && prev === 'finished') return 'lobby';
+        return prev;
+      });
       if (data.status === 'playing' && data.drawnBalls?.length > 0) speak(data.drawnBalls[0].letter, data.drawnBalls[0].number);
     });
-  }, [user, roomCode, playMode, currentScreen, speak, soundEnabled]);
+  }, [user, roomCode, playMode, speak, soundEnabled]);
 
   const startMultiGame = async () => {
     const cost = GAME_MODES[selectedMode].price * numCards;
@@ -421,20 +426,19 @@ export default function BingoMaster() {
 
   const leaveRoom = () => { setRoomCode(''); setMultiplayerState(null); setPlayMode(null); setCurrentScreen('main_menu'); setJoinCodeInput(''); };
 
-  // Host draws balls - runs once, uses refs to read current state
+  // Host draws balls - re-runs whenever isHost or currentScreen changes
   useEffect(() => {
-    const tick = async () => {
-      if (!isHostRef.current || currentScreenRef.current !== 'playing') return;
+    clearInterval(timerRef.current);
+    if (!isHost || currentScreen !== 'playing' || playMode !== 'multi') return;
+    timerRef.current = setInterval(async () => {
       const s = multiStateRef.current;
       if (!s || s.status !== 'playing' || !s.pool?.length) return;
       const pool = [...s.pool];
       const ball = pool.pop();
-      const code = roomCodeRef.current;
-      await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', code), {
+      await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode), {
         pool, drawnBalls: [ball, ...(s.drawnBalls || [])],
       });
-    };
-    timerRef.current = setInterval(tick, DRAW_INTERVAL);
+    }, DRAW_INTERVAL);
     return () => clearInterval(timerRef.current);
   }, [playMode, isHost, currentScreen, roomCode]);
 
