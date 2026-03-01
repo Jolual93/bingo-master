@@ -417,27 +417,36 @@ export default function BingoMaster() {
     updateCoins(-cost);
     setPlayerCards(Array.from({ length: numCards }, generateCard));
     if (isHost) {
+      winProcessedRef.current = false;
+      const newPool = generatePool();
       await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode), {
-        status: 'playing', pool: generatePool(), drawnBalls: [], winnerInfo: null, mode: selectedMode,
+        status: 'playing', pool: newPool, drawnBalls: [], winnerInfo: null, mode: selectedMode,
       });
+      // Host transitions immediately without waiting for snapshot
+      setCurrentScreen('playing');
       soundEnabled && window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`¡Comienza el Bingo, modo ${GAME_MODES[selectedMode].name}!`));
     }
   };
 
   const leaveRoom = () => { setRoomCode(''); setMultiplayerState(null); setPlayMode(null); setCurrentScreen('main_menu'); setJoinCodeInput(''); };
 
-  // Host draws balls - re-runs whenever isHost or currentScreen changes
+  // Host draws balls - simple interval that checks refs each tick
   useEffect(() => {
     clearInterval(timerRef.current);
-    if (!isHost || currentScreen !== 'playing' || playMode !== 'multi') return;
     timerRef.current = setInterval(async () => {
+      if (!isHostRef.current) return;
+      if (currentScreenRef.current !== 'playing') return;
       const s = multiStateRef.current;
       if (!s || s.status !== 'playing' || !s.pool?.length) return;
       const pool = [...s.pool];
       const ball = pool.pop();
-      await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode), {
-        pool, drawnBalls: [ball, ...(s.drawnBalls || [])],
-      });
+      const code = roomCodeRef.current;
+      if (!code) return;
+      try {
+        await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', code), {
+          pool, drawnBalls: [ball, ...(s.drawnBalls || [])],
+        });
+      } catch(e) { console.error('draw error', e); }
     }, DRAW_INTERVAL);
     return () => clearInterval(timerRef.current);
   }, [playMode, isHost, currentScreen, roomCode]);
