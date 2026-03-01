@@ -320,35 +320,38 @@ export default function BingoMaster() {
 
   // ── HOST: DRAW BALLS ──
   // This effect runs whenever screen or isHost changes
-  // It uses a self-scheduling setTimeout to avoid stale closures
+  // HOST: draw balls every DRAW_INTERVAL using setInterval
+  // Reads fresh data from Firestore every tick to avoid stale state
   useEffect(() => {
-    if (screen !== 'playing' || playMode !== 'multi' || !isHost) return;
+    if (screen !== 'playing' || playMode !== 'multi' || !isHost || !roomCode) return;
 
-    let cancelled = false;
+    console.log('[HOST] Starting ball draw interval for room:', roomCode);
 
-    const drawNext = async () => {
-      if (cancelled) return;
-      // Read fresh data directly from Firestore each time
+    const timer = setInterval(async () => {
       try {
-        const snap = await getDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode));
-        if (!snap.exists() || cancelled) return;
+        const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode);
+        const snap = await getDoc(roomRef);
+        if (!snap.exists()) return;
         const data = snap.data();
-        if (data.status !== 'playing' || !data.pool?.length) return;
+        console.log('[HOST] tick - status:', data.status, 'pool size:', data.pool?.length);
+        if (data.status !== 'playing') return;
+        if (!data.pool || data.pool.length === 0) { console.log('[HOST] Pool empty, stopping'); return; }
         const pool = [...data.pool];
         const ball = pool.pop();
-        await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode), {
-          pool, drawnBalls: [ball, ...(data.drawnBalls || [])],
+        console.log('[HOST] Drawing ball:', ball);
+        await updateDoc(roomRef, {
+          pool,
+          drawnBalls: [ball, ...(data.drawnBalls || [])],
         });
-        if (!cancelled) setTimeout(drawNext, DRAW_INTERVAL);
       } catch (e) {
-        console.error('draw error:', e);
-        if (!cancelled) setTimeout(drawNext, DRAW_INTERVAL);
+        console.error('[HOST] draw error:', e);
       }
-    };
+    }, DRAW_INTERVAL);
 
-    // Start drawing after first interval
-    const initial = setTimeout(drawNext, DRAW_INTERVAL);
-    return () => { cancelled = true; clearTimeout(initial); };
+    return () => {
+      console.log('[HOST] Clearing ball draw interval');
+      clearInterval(timer);
+    };
   }, [screen, isHost, playMode, roomCode]);
 
   // ── MULTIPLAYER ROOM ──
@@ -387,9 +390,19 @@ export default function BingoMaster() {
     await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode), {
       status: 'playing', pool: generatePool(), drawnBalls: [], winnerInfo: null, mode: selectedMode,
     });
-    // Host goes to playing screen immediately
-    if (isHost) setScreen('playing');
-    window.speechSynthesis?.speak(new SpeechSynthesisUtterance(`¡Comienza el Bingo!`));
+    setScreen('playing');
+    window.speechSynthesis?.speak(new SpeechSynthesisUtterance('¡Comienza el Bingo!'));
+  };
+
+  // Guests click this to confirm cards and wait
+  const guestReady = () => {
+    const cost = GAME_MODES[selectedMode].price * numCards;
+    if (coins < cost) return showToast('Monedas insuficientes');
+    updateCoins(-cost);
+    const cards = Array.from({ length: numCards }, generateCard);
+    setPlayerCards(cards);
+    winRef.current = false;
+    showToast('¡Cartones listos! Espera que el anfitrión inicie 🎱');
   };
 
   const leaveRoom = () => { setRoomCode(''); setRoomData(null); setPlayMode(null); setScreen('main_menu'); setJoinInput(''); };
@@ -608,8 +621,14 @@ export default function BingoMaster() {
                 <button onClick={startMultiGame} disabled={coins < totalCost} style={{ ...btn('#22c55e', '#0f172a'), opacity: coins < totalCost ? 0.5 : 1 }}>
                   <Play fill="currentColor" size={20} /> ¡Empezar Partida!
                 </button>
+              ) : playerCards.length > 0 ? (
+                <div style={{ textAlign: 'center', background: 'rgba(34,197,94,0.1)', border: '1px solid #22c55e', borderRadius: '0.75rem', padding: '1rem', color: '#4ade80', fontWeight: 700 }}>
+                  ✅ Cartones listos — esperando al anfitrión...
+                </div>
               ) : (
-                <div style={{ textAlign: 'center', color: '#94a3b8', fontWeight: 700, padding: '1rem', animation: 'pulse 2s infinite' }}>⏳ Esperando al anfitrión...</div>
+                <button onClick={guestReady} disabled={coins < totalCost} style={{ ...btn('#f59e0b', '#0f172a'), opacity: coins < totalCost ? 0.5 : 1 }}>
+                  <Ticket size={20} /> Comprar {numCards} Cartón{numCards > 1 ? 'es' : ''} ({totalCost} 🪙)
+                </button>
               )}
             </div>
           </div>
