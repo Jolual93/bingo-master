@@ -197,7 +197,11 @@ export default function BingoMaster() {
 
   // Refs for intervals
   const localTimerRef = useRef(null);
+  const hostTimerRef = useRef(null);
   const winRef = useRef(false);
+  const roomCodeRef = useRef('');
+
+  useEffect(() => { roomCodeRef.current = roomCode; }, [roomCode]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3500); };
 
@@ -320,39 +324,7 @@ export default function BingoMaster() {
 
   // ── HOST: DRAW BALLS ──
   // This effect runs whenever screen or isHost changes
-  // HOST: draw balls every DRAW_INTERVAL using setInterval
-  // Reads fresh data from Firestore every tick to avoid stale state
-  useEffect(() => {
-    if (screen !== 'playing' || playMode !== 'multi' || !isHost || !roomCode) return;
-
-    console.log('[HOST] Starting ball draw interval for room:', roomCode);
-
-    const timer = setInterval(async () => {
-      try {
-        const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode);
-        const snap = await getDoc(roomRef);
-        if (!snap.exists()) return;
-        const data = snap.data();
-        console.log('[HOST] tick - status:', data.status, 'pool size:', data.pool?.length);
-        if (data.status !== 'playing') return;
-        if (!data.pool || data.pool.length === 0) { console.log('[HOST] Pool empty, stopping'); return; }
-        const pool = [...data.pool];
-        const ball = pool.pop();
-        console.log('[HOST] Drawing ball:', ball);
-        await updateDoc(roomRef, {
-          pool,
-          drawnBalls: [ball, ...(data.drawnBalls || [])],
-        });
-      } catch (e) {
-        console.error('[HOST] draw error:', e);
-      }
-    }, DRAW_INTERVAL);
-
-    return () => {
-      console.log('[HOST] Clearing ball draw interval');
-      clearInterval(timer);
-    };
-  }, [screen, isHost, playMode, roomCode]);
+  // Host drawing is started directly in startMultiGame
 
   // ── MULTIPLAYER ROOM ──
   const createRoom = async () => {
@@ -387,11 +359,29 @@ export default function BingoMaster() {
     const cards = Array.from({ length: numCards }, generateCard);
     setPlayerCards(cards);
     winRef.current = false;
+    const pool = generatePool();
     await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', roomCode), {
-      status: 'playing', pool: generatePool(), drawnBalls: [], winnerInfo: null, mode: selectedMode,
+      status: 'playing', pool, drawnBalls: [], winnerInfo: null, mode: selectedMode,
     });
     setScreen('playing');
     window.speechSynthesis?.speak(new SpeechSynthesisUtterance('¡Comienza el Bingo!'));
+
+    // Start drawing balls directly — no useEffect needed
+    clearInterval(hostTimerRef.current);
+    hostTimerRef.current = setInterval(async () => {
+      const code = roomCodeRef.current;
+      if (!code) return;
+      try {
+        const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'bingo_rooms', code);
+        const snap = await getDoc(roomRef);
+        if (!snap.exists()) return;
+        const data = snap.data();
+        if (data.status !== 'playing' || !data.pool?.length) return;
+        const p = [...data.pool];
+        const ball = p.pop();
+        await updateDoc(roomRef, { pool: p, drawnBalls: [ball, ...(data.drawnBalls || [])] });
+      } catch (e) { console.error('draw error:', e); }
+    }, DRAW_INTERVAL);
   };
 
   // Guests click this to confirm cards and wait
@@ -405,7 +395,7 @@ export default function BingoMaster() {
     showToast('¡Cartones listos! Espera que el anfitrión inicie 🎱');
   };
 
-  const leaveRoom = () => { setRoomCode(''); setRoomData(null); setPlayMode(null); setScreen('main_menu'); setJoinInput(''); };
+  const leaveRoom = () => { clearInterval(hostTimerRef.current); setRoomCode(''); setRoomData(null); setPlayMode(null); setScreen('main_menu'); setJoinInput(''); };
 
   // ── LOCAL GAME ──
   const startLocalGame = () => {
